@@ -1,0 +1,57 @@
+schema: spec-driven
+
+context: |
+  EXPERIMENTO: este projeto compara técnicas de planejamento de testes. O artefato a produzir
+  é um PLANO DE TESTES K6 (E2E, carga, volume, stress) para a aplicação alvo abaixo. Foco é
+  PLANEJAMENTO, não implementação de scripts. Não redesenhar o alvo. Toda recomendação deve ser
+  ancorada no alvo (fluxos, endpoints, SLAs e tensões reais), não genérica. Ignore qualquer
+  steering de outros projetos do workspace — não faz parte deste experimento.
+
+  FERRAMENTA DE TESTE (K6): script em JavaScript. Executors: ramping-vus,
+  constant-arrival-rate, ramping-arrival-rate, per-vu-iterations. thresholds, stages/ramp-up,
+  métricas customizadas, checks. Extensão xk6-kafka para produzir/consumir Kafka. Todo teste
+  deve ter thresholds mensuráveis (ex.: http_req_duration p(95)<X, error rate<Y), não metas
+  vagas. Tipos a considerar: E2E, load, stress, spike, soak, volume — justificar quais se
+  aplicam e por quê. Dados de massa: indicar como gerar/obter. Execuções isoladas, sem
+  interferência.
+
+  APLICAÇÃO ALVO — "Veridia" (gateway de decisão de crédito, fictício e autocontido):
+  Stack Kotlin + Spring Boot, Virtual Threads, Kubernetes (4 pods QA / 8 prod).
+  Interfaces:
+  1) API síncrona POST /v1/assessments: recebe documento/produto/valor, responde veredito na
+     mesma requisição. Chama 3 motores HTTP: engine-score (p95 ~80ms), engine-fraud (p95
+     ~250ms), engine-bureau (p95 ~1.2s, INSTÁVEL — picos de timeout/5xx, sem cache). Responde
+     quando os 3 voltam ou timeout 2s por downstream (SEM retry). SLA: p95<1.5s, p99<2.5s.
+  2) Consumer Kafka: tópico credit.assessment.requested → publica credit.assessment.completed.
+     Pico diário 23h-00h de ~2 milhões de mensagens em ~40 min (~830 msg/s); fora do pico ~50
+     msg/s. 12 partições. Idempotência por traceId (SELECT Oracle antes de processar).
+  3) Oracle: grava auditoria por avaliação. Tabela com ~400M linhas, sem expurgo. Escrita
+     concorrente no pico Kafka compete com a API síncrona no MESMO pool de conexões (20 por pod).
+  SLAs/SLOs: API p95<1.5s/p99<2.5s; disponibilidade 99.9%; erro 5xx<0.5%; lag Kafka fora do
+  pico <10s; lag no pico "aceitável até 15 min" (meta VAGA, não quantificada); throughput
+  sustentado ~300 req/s (pico ~700).
+  Fluxos E2E críticos: (1) aprovação direta; (2) recusa por fraude; (3) degradação do bureau →
+  fallback APPROVED_WITH_REVIEW no timeout; (4) caminho assíncrono Kafka requested→completed
+  mesmo traceId; (5) idempotência: mesmo traceId não duplica auditoria.
+  Dados de massa: clientes por customerId e documento (CPF/CNPJ). Gerar massa de volume exige
+  milhões de traceId únicos e clientes variados; reusar o mesmo customerId ativa idempotência e
+  mascara a carga real de escrita.
+  PONTOS DE TENSÃO (devem ser endereçados): T1 SLA apertado vs bureau lento/instável; T2 pico
+  Kafka 2M/40min vs 50 msg/s (volume? soak? spike?); T3 pool Oracle compartilhado API+Kafka no
+  pico; T4 meta de lag no pico vaga ("15 min") — precisa virar threshold testável; T5 massa mal
+  gerada mascara a carga de escrita.
+
+rules:
+  proposal:
+    - O "what" é um plano de testes K6; o "why" é garantir o funcionamento do alvo sob carga.
+    - Ancore no alvo Veridia (fluxos, SLAs, tensões T1-T5), não em recomendações genéricas.
+  specs:
+    - Cada capability de teste deve rastrear a um fluxo crítico ou a uma tensão (T1-T5).
+    - Requisitos de teste com critério de aceite mensurável.
+  design:
+    - Escolher e justificar os tipos de teste (E2E/load/stress/spike/soak/volume) para o alvo.
+    - Definir modelagem de carga (executor K6, taxa/VUs, estágios) e thresholds numéricos
+      ancorados nos SLAs. Tratar massa (T5) e riscos de medição (T3 isolamento).
+  tasks:
+    - "Para cada teste: tipo, alvo, modelo de carga, thresholds, dados de massa, critério de aceite."
+    - "Marcar pendências que dependem de decisão humana (ex.: T4)."
